@@ -1,0 +1,179 @@
+import os
+import time
+import json
+import threading
+from typing import List, Dict, Optional
+
+from transformers import pipeline  # Free AI model library
+from gtts import gTTS  # Free text-to-speech
+
+# --- CONFIGURATION ---
+MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.1"  # Free model from Hugging Face
+MEMORY_FILE = "creative_memory.json"  # File to store ideas
+OUTPUT_DIR = "creative_outputs"
+os.makedirs(OUTPUT_DIR, exist_ok=True)  # Folder for saving ideas
+
+# --- UTILS ---
+def timestamp():
+    return time.strftime("%Y%m%d_%H%M%S")
+
+def save_text(filename: str, text: str):
+    with open(os.path.join(OUTPUT_DIR, filename), "w", encoding="utf-8") as f:
+        f.write(text)
+
+def speak_text(text: str):
+    try:
+        tts = gTTS(text[:500])  # Limit for speed
+        tts.save("temp.mp3")
+        os.system("start temp.mp3")  # Windows only, change for Mac/Linux
+    except Exception as e:
+        print(f"[Speech Error] Couldn't speak: {e}")
+
+# --- MEMORY MANAGER ---
+class MemoryManager:
+    def __init__(self, memory_file: str = MEMORY_FILE):
+        self.memory_file = memory_file
+        self.texts: List[Dict] = []
+        self._load_memory()
+
+    def _load_memory(self):
+        if os.path.exists(self.memory_file):
+            try:
+                with open(self.memory_file, "r", encoding="utf-8") as f:
+                    self.texts = json.load(f)
+                print(f"[Memory] Loaded {len(self.texts)} ideas.")
+            except Exception as e:
+                print(f"[Memory] Couldn't load: {e}")
+                self.texts = []
+        else:
+            self.texts = []
+
+    def add_entry(self, prompt: str, output: str):
+        self.texts.append({"prompt": prompt, "output": output, "timestamp": timestamp()})
+        self._save_memory()
+        print(f"[Memory] Saved new idea. Total: {len(self.texts)}")
+
+    def search(self, query: str, top_k: int = 3) -> List[str]:
+        if not self.texts:
+            return []
+        query_words = set(query.lower().split())
+        matches = []
+        for entry in self.texts:
+            text = (entry["prompt"] + " " + entry["output"]).lower()
+            score = sum(1 for word in query_words if word in text)
+            if score > 0:
+                matches.append((score, entry["output"]))
+        matches.sort(reverse=True)
+        return [m[1] for m in matches[:top_k]]
+
+    def _save_memory(self):
+        with open(self.memory_file, "w", encoding="utf-8") as f:
+            json.dump(self.texts, f)
+
+# --- AGENT ---
+class Agent:
+    def __init__(self, name: str, role: str, style: str):
+        self.name = name
+        self.role = role
+        self.style = style
+        try:
+            self.generator = pipeline("text-generation", model=MODEL_NAME, device=-1)
+        except Exception as e:
+            print(f"[Error] Couldn't load AI model: {e}. Using fallback mode.")
+            self.generator = None
+
+    def generate(self, prompt: str, memory_context: Optional[List[str]] = None) -> str:
+        full_prompt = f"You are a {self.role} with a {self.style} style. "
+        if memory_context:
+            full_prompt += f"Use these past ideas for inspiration:\n{' '.join(memory_context)}\n"
+        full_prompt += f"Now, answer creatively: {prompt}"
+
+        if not self.generator:
+            return f"[Fallback] {self.name} suggests: A creative idea for {prompt} (install model to see more)."
+
+        try:
+            response = self.generator(full_prompt, max_length=300, num_return_sequences=1, temperature=1.2)[0]["generated_text"]
+            response = response.replace(full_prompt, "").strip()
+            return response[:500]
+        except Exception as e:
+            return f"[Error] {self.name} failed: {e}"
+
+# --- AGENT MANAGER ---
+class AgentManager:
+    def __init__(self):
+        self.agents = [
+            Agent("Dreamer", "visionary inventor", "bold and futuristic"),
+            Agent("Sage", "wise philosopher", "deep and reflective"),
+            Agent("Bard", "creative storyteller", "vivid and emotional"),
+            Agent("Rebel", "disruptive innovator", "radical and unconventional")
+        ]
+
+    def collaborate(self, prompt: str, memory: MemoryManager) -> str:
+        context = memory.search(prompt)
+        outputs = []
+        for agent in self.agents:
+            print(f"[Agent] {agent.name} is thinking...")
+            idea = agent.generate(prompt, context)
+            outputs.append(f"{agent.name}'s idea: {idea}")
+
+        combined = "\n".join(outputs)
+        fusion_prompt = f"Here are different ideas:\n{combined}\nNow, blend them into one creative, coherent idea."
+        fusion_agent = Agent("Fusion", "idea synthesizer", "clear and unifying")
+        final_idea = fusion_agent.generate(fusion_prompt)
+        return final_idea
+
+# --- CREATIVITY ENGINE ---
+class CreativityEngine:
+    def __init__(self):
+        self.memory = MemoryManager()
+        self.agents = AgentManager()
+        self.tts_enabled = True
+
+    def run_cycle(self, prompt: str):
+        print(f"\n[Engine] Creating for: {prompt}")
+        output = self.agents.collaborate(prompt, self.memory)
+        print(f"\n[Output]:\n{output}")
+
+        self.memory.add_entry(prompt, output)
+        filename = f"idea_{timestamp()}.txt"
+        save_text(filename, output)
+        print(f"[Saved] Idea saved to {filename}")
+
+        if self.tts_enabled:
+            print("[Speaking]...")
+            threading.Thread(target=speak_text, args=(output,)).start()
+
+    def interactive_loop(self):
+        print("Welcome to your Free-Thinking Creativity Engine!")
+        print("Type 'exit' to quit, 'memory' to see past ideas, or 'share' to get a post for X.")
+        while True:
+            prompt = input("Your idea or question: ").strip()
+            if prompt.lower() == "exit":
+                print("See you next time!")
+                break
+            elif prompt.lower() == "memory":
+                print("\n[Past Ideas]:")
+                for i, entry in enumerate(self.memory.texts[-5:], 1):
+                    print(f"{i}. Prompt: {entry['prompt'][:50]}...\n   Idea: {entry['output'][:100]}...")
+                continue
+            elif prompt.lower() == "share":
+                if self.memory.texts:
+                    last_idea = self.memory.texts[-1]["output"][:200]
+                    print(f"\n[Share on X]: 'My AI came up with this wild idea: {last_idea}... What do you think? #AIRevolution'")
+                else:
+                    print("[Share] No ideas yet! Create one first.")
+                continue
+            if prompt:
+                self.run_cycle(prompt)
+
+def main():
+    try:
+        engine = CreativityEngine()
+        engine.interactive_loop()
+    except KeyboardInterrupt:
+        print("\nStopped by user. Your ideas are saved!")
+    except Exception as e:
+        print(f"[Error] Something went wrong: {e}")
+
+if __name__ == "__main__":
+    main()
